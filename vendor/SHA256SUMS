@@ -1,0 +1,4 @@
+a4a068cd6cf1ea8355b84327595838ca748ec29a25bc91fc82e6c299ccdc5808  vendor/models/silero/model.onnx
+709853412fd1ffc34247af1e73569227b5b79629c5ca3f59cc39cf7e500e4947  vendor/runtime/ort-wasm-simd-threaded.jsep.mjs
+3398c10d07d229bd91b364548e130e0e51a8e5704b88c7c083ebbeb78842dee2  vendor/runtime/ort-wasm-simd-threaded.wasm
+7ae472a8ec976bcb69ad46b89b0a6ec8f3c5dbea4477674a26958672d1f3322d  vendor/runtime/ort.min.js
