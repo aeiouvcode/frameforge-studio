@@ -98,7 +98,8 @@
   }
   function detok(ids) {
     const bytes = []; for (const id of ids) { if (id >= vocab.eos) continue; for (const ch of vocab.tokens[id] || '') { const b = vocab.byteOf.get(ch); if (b !== undefined) bytes.push(b); } }
-    return new TextDecoder().decode(new Uint8Array(bytes)).replace(/\s+/g, ' ').trim();
+    // A window can end mid-character (Devanagari is 3 bytes per letter); drop the broken tail.
+    return new TextDecoder().decode(new Uint8Array(bytes)).replace(/\uFFFD/g, '').replace(/\s+/g, ' ').trim();
   }
 
   // Slaney mel filterbank and periodic Hann window, as defined by the model's training front end.
