@@ -193,7 +193,8 @@
       if (best === vocab.eos || best < 0) break;
       ids.push(best); outIds.push(best);
       if (isTs(best)) lastTs = (best - TS) * 0.02;
-      if (stuck(outIds) || outIds.length > 12 + dur * 10) break; // hallucination guard
+      const loop = stuck(outIds); if (loop) { outIds.length -= loop; break; } // hallucination guard
+      if (outIds.length > 12 + dur * 10) break;
     }
     const segments = []; let cur = null, words = [];
     for (const id of outIds) {
@@ -208,15 +209,17 @@
     return { text: detok(outIds), language: lang, segments, tokens: outIds.length, encodeMs: Math.round(t1 - t0), totalMs: Math.round(performance.now() - t0) };
   }
 
-  // True when the tail is one short token pattern (1-4 tokens) repeated four or more times.
+  // Length to trim when the tail is a repeating token loop: a 1-4 token pattern four or more
+  // times, or a longer 5-16 token pattern (a multi-token word or phrase) three times.
   function stuck(ids) {
-    for (let p = 1; p <= 4; p++) {
-      if (ids.length < p * 4) continue;
+    for (let p = 1; p <= 16; p++) {
+      const times = p <= 4 ? 4 : 3;
+      if (ids.length < p * times) continue;
       let rep = true;
-      for (let i = ids.length - p * 3; i < ids.length && rep; i++) if (ids[i] !== ids[i - p]) rep = false;
-      if (rep) return true;
+      for (let i = ids.length - p * (times - 1); i < ids.length && rep; i++) if (ids[i] !== ids[i - p]) rep = false;
+      if (rep) return p * (times - 1); // tokens to drop so one copy stays
     }
-    return false;
+    return 0;
   }
 
   // One decoder step. The merged export keeps a key/value cache between steps,
