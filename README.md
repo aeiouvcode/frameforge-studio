@@ -2,6 +2,10 @@
 
 A local-first browser video editor. Imported media, project state, captions and renders stay on the device. The app has no analytics, cloud sync or application server.
 
+![FrameForge Studio editor](docs/screenshot.jpg)
+
+**Live:** https://aeiouvcode.github.io/frameforge-studio/
+
 ## Run on localhost
 
 Python 3:
