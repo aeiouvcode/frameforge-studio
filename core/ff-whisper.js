@@ -7,7 +7,7 @@
   const BASE = './vendor/models/whisper-tiny-en/';
   const PACK = [
     { name: 'encoder.onnx', sha: '21712ecbe2d1078eaa206b41218a6dff945eb9ac0854b55fd584e8bc88b20368', bytes: 10124977 },
-    { name: 'decoder.onnx', parts: ['decoder.onnx.00', 'decoder.onnx.01', 'decoder.onnx.02'], sha: '2adcd415dd1ddfdd7a5a55d303a0925612869f7b0f7b810eada6069837128d1d', bytes: 30460688 },
+    { name: 'decoder-merged.onnx', parts: ['decoder-merged.onnx.00', 'decoder-merged.onnx.01', 'decoder-merged.onnx.02'], sha: 'c0592d0749413c960569e1c7fb806b060d5d18f3ebad4a95cbf9a77dc6e9be52', bytes: 30718858 },
     { name: 'tokens.json', sha: 'aaaee82ab6816c47c1e361c64e2220a03b8c246fd04e997261b7d0ca6067f8a7', bytes: 508246 }
   ];
   const PACK_BYTES = PACK.reduce((a, f) => a + f.bytes, 0);
@@ -56,6 +56,7 @@
       const opt = { executionProviders: ['wasm'], graphOptimizationLevel: 'all' };
       enc = await ort.InferenceSession.create(new Uint8Array(bufs[0]), opt);
       dec = await ort.InferenceSession.create(new Uint8Array(bufs[1]), opt);
+      if (dir) { try { const keep = new Set(PACK.map(f => f.name)); for await (const name of dir.keys()) if (!keep.has(name)) await dir.removeEntry(name); } catch { /* best effort */ } }
       vocab = JSON.parse(new TextDecoder().decode(bufs[2]));
       vocab.byteOf = byteDecoder();
       vocab.mask = new Uint8Array(51864); for (const i of vocab.suppress) vocab.mask[i] = 1;
@@ -132,11 +133,9 @@
     const t1 = performance.now();
     const V = 51864, TS = vocab.noTimestamps + 1, dur = Math.min(pcm.length, NSAMPLES) / SR;
     const ids = timestamps ? [vocab.sot] : [vocab.sot, vocab.noTimestamps], outIds = [];
-    let lastTs = 0;
+    let lastTs = 0; const cache = { past: null };
     for (let step = 0; step < maxTokens; step++) {
-      const inp = new ort.Tensor('int64', BigInt64Array.from(ids.map(BigInt)), [1, ids.length]);
-      const feeds = {}; for (const n of dec.inputNames) feeds[n] = /hidden/.test(n) ? hidden : inp;
-      const r = await dec.run(feeds), logits = r[dec.outputNames[0]].data, off = (ids.length - 1) * V;
+      const { logits, off } = await step_(ids, hidden, cache);
       const isTs = i => i >= TS, prev = outIds[outIds.length - 1], prev2 = outIds[outIds.length - 2];
       const allowText = !timestamps || !(outIds.length === 0 || (isTs(prev) && !isTs(prev2 ?? TS)));
       const allowTs = timestamps && !(outIds.length && isTs(prev) && isTs(prev2 ?? TS));
@@ -173,6 +172,29 @@
     if (words.length) { const text = detok(words); if (text) segments.push({ start: cur ? cur.start : (segments.at(-1)?.end ?? 0), end: dur, text }); }
     for (const sg of segments) { sg.start = Math.max(0, Math.min(dur, sg.start)); sg.end = Math.max(sg.start + 0.2, Math.min(dur, sg.end)); }
     return { text: detok(outIds), segments, tokens: outIds.length, encodeMs: Math.round(t1 - t0), totalMs: Math.round(performance.now() - t0) };
+  }
+
+  // One decoder step. The merged export keeps a key/value cache between steps,
+  // so after the prompt only the newest token is fed; older exports re-run the sequence.
+  const EMPTY = () => new ort.Tensor('float32', new Float32Array(0), [1, 6, 0, 64]);
+  async function step_(ids, hidden, cache) {
+    const V = 51864, cached = dec.inputNames.includes('use_cache_branch');
+    if (!cached) {
+      const inp = new ort.Tensor('int64', BigInt64Array.from(ids.map(BigInt)), [1, ids.length]);
+      const feeds = {}; for (const n of dec.inputNames) feeds[n] = /hidden/.test(n) ? hidden : inp;
+      const r = await dec.run(feeds);
+      return { logits: r[dec.outputNames[0]].data, off: (ids.length - 1) * V };
+    }
+    const first = !cache.past, feed = first ? ids : ids.slice(-1);
+    const feeds = { input_ids: new ort.Tensor('int64', BigInt64Array.from(feed.map(BigInt)), [1, feed.length]), encoder_hidden_states: hidden, use_cache_branch: new ort.Tensor('bool', [!first], [1]) };
+    for (const n of dec.inputNames) if (n.startsWith('past_key_values.')) feeds[n] = first ? EMPTY() : cache.past[n];
+    const r = await dec.run(feeds), past = {};
+    for (const n of dec.outputNames) if (n.startsWith('present.')) {
+      const k = n.replace('present.', 'past_key_values.');
+      past[k] = (!first && k.includes('.encoder.')) ? cache.past[k] : r[n];
+    }
+    cache.past = past;
+    return { logits: r.logits.data, off: (feed.length - 1) * V };
   }
 
   window.ffWhisper = { useCore(k) { kernel = k && k.logMel ? k : null; }, get kernel() { return kernel ? 'zig' : 'js'; }, load, transcribe, cached, forget, logMel, packBytes: PACK_BYTES, get ready() { return !!(enc && dec && vocab); } };
