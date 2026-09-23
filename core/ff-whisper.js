@@ -127,7 +127,7 @@
   // Greedy decode of one window of up to 30 s of 16 kHz mono audio. With
   // timestamps on, the model's own <|t|> tokens split the text into timed
   // segments, using the standard pairing and monotonic rules.
-  async function transcribe(pcm, { maxTokens = 180, timestamps = true, verbatim = true } = {}) {
+  async function transcribe(pcm, { maxTokens = 180, timestamps = true, verbatim = false } = {}) {
     await load();
     const t0 = performance.now();
     const feats = new ort.Tensor('float32', logMel(pcm), [1, NMEL, NFRAMES]);
