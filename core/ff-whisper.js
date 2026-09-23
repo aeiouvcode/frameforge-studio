@@ -4,20 +4,36 @@
 (() => {
   'use strict';
   const SR = 16000, NFFT = 400, HOP = 160, NMEL = 80, NFRAMES = 3000, NSAMPLES = 480000;
-  const BASE = './vendor/models/whisper-tiny-en/';
-  const PACK = [
-    { name: 'encoder.onnx', sha: '21712ecbe2d1078eaa206b41218a6dff945eb9ac0854b55fd584e8bc88b20368', bytes: 10124977 },
-    { name: 'decoder-merged.onnx', parts: ['decoder-merged.onnx.00', 'decoder-merged.onnx.01', 'decoder-merged.onnx.02'], sha: 'c0592d0749413c960569e1c7fb806b060d5d18f3ebad4a95cbf9a77dc6e9be52', bytes: 30718858 },
-    { name: 'tokens.json', sha: 'aaaee82ab6816c47c1e361c64e2220a03b8c246fd04e997261b7d0ca6067f8a7', bytes: 508246 }
-  ];
+  // Two packs: English-only tiny.en (default) and the multilingual tiny model.
+  const PACKS = {
+    en: { base: './vendor/models/whisper-tiny-en/', opfs: 'ff-speech-tiny-en', files: [
+      { name: 'encoder.onnx', sha: '21712ecbe2d1078eaa206b41218a6dff945eb9ac0854b55fd584e8bc88b20368', bytes: 10124977 },
+      { name: 'decoder-merged.onnx', parts: ['decoder-merged.onnx.00', 'decoder-merged.onnx.01', 'decoder-merged.onnx.02'], sha: 'c0592d0749413c960569e1c7fb806b060d5d18f3ebad4a95cbf9a77dc6e9be52', bytes: 30718858 },
+      { name: 'tokens.json', sha: 'aaaee82ab6816c47c1e361c64e2220a03b8c246fd04e997261b7d0ca6067f8a7', bytes: 508246 }
+    ] },
+    multi: { base: './vendor/models/whisper-tiny/', opfs: 'ff-speech-tiny', files: [
+      { name: 'encoder.onnx', sha: '03ff3c99ce804f79a42afd6212c9492eb75e55625926de66f8fc192e9567d336', bytes: 10124977 },
+      { name: 'decoder-merged.onnx', parts: ['decoder-merged.onnx.00', 'decoder-merged.onnx.01', 'decoder-merged.onnx.02'], sha: '25e807a962b6349356d0ea5d0dfe530b7e5bf0e2a484aeca0359d03143faddd3', bytes: 30719241 },
+      { name: 'tokens.json', sha: '9c6aae2908bbef3c7ac331e5ed0d7782ba4704b19ca22bb65922d374b018807c', bytes: 565275 }
+    ] }
+  };
+  let packName = 'en', BASE = PACKS.en.base, PACK = PACKS.en.files;
+  const live_ = {};
   // " Um, uh, so, like, hmm, I mean, you know," in the model's tokenizer (rev 2575352d).
   const VERBATIM_PROMPT = [21039, 11, 21480, 11, 523, 11, 588, 11, 289, 3020, 11, 314, 1612, 11, 345, 760, 11];
-  const PACK_BYTES = PACK.reduce((a, f) => a + f.bytes, 0);
+  const packBytes = () => PACK.reduce((a, f) => a + f.bytes, 0);
   let kernel = null, enc = null, dec = null, vocab = null, filters = null, cosT = null, sinT = null, win = null, loading = null;
+  // Switch packs; sessions stay loaded per pack so flipping back is free.
+  function setPack(name) {
+    if (!PACKS[name] || name === packName) return;
+    live_[packName] = { enc, dec, vocab, loading };
+    packName = name; BASE = PACKS[name].base; PACK = PACKS[name].files;
+    ({ enc = null, dec = null, vocab = null, loading = null } = live_[name] || {});
+  }
 
   const hex = buf => [...new Uint8Array(buf)].map(b => b.toString(16).padStart(2, '0')).join('');
   async function opfsDir() {
-    try { return await (await navigator.storage.getDirectory()).getDirectoryHandle('ff-speech-tiny-en', { create: true }); }
+    try { return await (await navigator.storage.getDirectory()).getDirectoryHandle(PACKS[packName].opfs, { create: true }); }
     catch { return null; }
   }
   async function getVerified(f, dir, onBytes) {
@@ -45,23 +61,24 @@
     for (const f of PACK) { try { if ((await (await dir.getFileHandle(f.name)).getFile()).size !== f.bytes) return false; } catch { return false; } }
     return true;
   }
-  async function forget() { try { await (await navigator.storage.getDirectory()).removeEntry('ff-speech-tiny-en', { recursive: true }); } catch { } enc = dec = vocab = null; loading = null; }
+  async function forget() { try { await (await navigator.storage.getDirectory()).removeEntry(PACKS[packName].opfs, { recursive: true }); } catch { } enc = dec = vocab = null; loading = null; }
 
   function load(onProgress = () => {}) {
     if (enc && dec && vocab) return Promise.resolve();
     return loading ||= (async () => {
       if (!window.ort) throw Error('ONNX Runtime unavailable');
-      const dir = await opfsDir(); let done = 0;
-      const tick = n => { done += n; onProgress(Math.min(1, done / PACK_BYTES)); };
+      const dir = await opfsDir(), total = packBytes(), files = PACK; let done = 0;
+      const tick = n => { done += n; onProgress(Math.min(1, done / total)); };
       const bufs = [];
-      for (const f of PACK) bufs.push(await getVerified(f, dir, tick));
+      for (const f of files) bufs.push(await getVerified(f, dir, tick));
       const opt = { executionProviders: ['wasm'], graphOptimizationLevel: 'all' };
       enc = await ort.InferenceSession.create(new Uint8Array(bufs[0]), opt);
       dec = await ort.InferenceSession.create(new Uint8Array(bufs[1]), opt);
-      if (dir) { try { const keep = new Set(PACK.map(f => f.name)); for await (const name of dir.keys()) if (!keep.has(name)) await dir.removeEntry(name); } catch { /* best effort */ } }
+      if (dir) { try { const keep = new Set(files.map(f => f.name)); for await (const name of dir.keys()) if (!keep.has(name)) await dir.removeEntry(name); } catch { /* best effort */ } }
       vocab = JSON.parse(new TextDecoder().decode(bufs[2]));
       vocab.byteOf = byteDecoder();
-      vocab.mask = new Uint8Array(51864); for (const i of vocab.suppress) vocab.mask[i] = 1;
+      vocab.V = vocab.noTimestamps + 1 + 1501; // text + specials, then 1501 timestamp tokens (0.00-30.00 s)
+      vocab.mask = new Uint8Array(vocab.V); for (const i of vocab.suppress) vocab.mask[i] = 1;
     })().catch(err => { loading = null; enc = dec = vocab = null; throw err; });
   }
 
@@ -127,17 +144,29 @@
   // Greedy decode of one window of up to 30 s of 16 kHz mono audio. With
   // timestamps on, the model's own <|t|> tokens split the text into timed
   // segments, using the standard pairing and monotonic rules.
-  async function transcribe(pcm, { maxTokens = 180, timestamps = true, verbatim = false } = {}) {
+  // language: null for the English pack; 'auto' or a code such as 'hi' for the multilingual pack.
+  async function detectLanguage(hidden) {
+    const { logits, off } = await step_([vocab.sot], hidden, { past: null });
+    let best = null, bv = -Infinity;
+    for (const [code, id] of Object.entries(vocab.langs)) { const v = logits[off + id]; if (v > bv) { bv = v; best = code; } }
+    return best;
+  }
+  async function transcribe(pcm, { maxTokens = 180, timestamps = true, verbatim = false, language = 'auto' } = {}) {
     await load();
     const t0 = performance.now();
     const feats = new ort.Tensor('float32', logMel(pcm), [1, NMEL, NFRAMES]);
     const eo = await enc.run({ [enc.inputNames[0]]: feats }), hidden = eo[enc.outputNames[0]];
     const t1 = performance.now();
-    const V = 51864, TS = vocab.noTimestamps + 1, dur = Math.min(pcm.length, NSAMPLES) / SR;
+    const V = vocab.V, TS = vocab.noTimestamps + 1, dur = Math.min(pcm.length, NSAMPLES) / SR;
     // Verbatim mode primes the decoder with a previous-text prompt full of fillers,
     // which makes Whisper keep "um" and "uh" instead of tidying them away.
-    const prompt = verbatim ? [50360, ...VERBATIM_PROMPT] : [];
-    const ids = [...prompt, ...(timestamps ? [vocab.sot] : [vocab.sot, vocab.noTimestamps])], outIds = [];
+    const prompt = verbatim && !vocab.langs ? [50360, ...VERBATIM_PROMPT] : [];
+    let lang = null, head = [vocab.sot];
+    if (vocab.langs) {
+      lang = language && language !== 'auto' && vocab.langs[language] ? language : await detectLanguage(hidden);
+      head = [vocab.sot, vocab.langs[lang], vocab.transcribe];
+    }
+    const ids = [...prompt, ...head, ...(timestamps ? [] : [vocab.noTimestamps])], outIds = [];
     let lastTs = 0; const cache = { past: null };
     for (let step = 0; step < maxTokens; step++) {
       const { logits, off } = await step_(ids, hidden, cache);
@@ -176,7 +205,7 @@
     }
     if (words.length) { const text = detok(words); if (text) segments.push({ start: cur ? cur.start : (segments.at(-1)?.end ?? 0), end: dur, text }); }
     for (const sg of segments) { sg.start = Math.max(0, Math.min(dur, sg.start)); sg.end = Math.max(sg.start + 0.2, Math.min(dur, sg.end)); }
-    return { text: detok(outIds), segments, tokens: outIds.length, encodeMs: Math.round(t1 - t0), totalMs: Math.round(performance.now() - t0) };
+    return { text: detok(outIds), language: lang, segments, tokens: outIds.length, encodeMs: Math.round(t1 - t0), totalMs: Math.round(performance.now() - t0) };
   }
 
   // True when the tail is one short token pattern (1-4 tokens) repeated four or more times.
@@ -194,7 +223,7 @@
   // so after the prompt only the newest token is fed; older exports re-run the sequence.
   const EMPTY = () => new ort.Tensor('float32', new Float32Array(0), [1, 6, 0, 64]);
   async function step_(ids, hidden, cache) {
-    const V = 51864, cached = dec.inputNames.includes('use_cache_branch');
+    const V = vocab.V, cached = dec.inputNames.includes('use_cache_branch');
     if (!cached) {
       const inp = new ort.Tensor('int64', BigInt64Array.from(ids.map(BigInt)), [1, ids.length]);
       const feeds = {}; for (const n of dec.inputNames) feeds[n] = /hidden/.test(n) ? hidden : inp;
@@ -213,5 +242,5 @@
     return { logits: r.logits.data, off: (feed.length - 1) * V };
   }
 
-  window.ffWhisper = { useCore(k) { kernel = k && k.logMel ? k : null; }, get kernel() { return kernel ? 'zig' : 'js'; }, load, transcribe, cached, forget, logMel, packBytes: PACK_BYTES, get ready() { return !!(enc && dec && vocab); } };
+  window.ffWhisper = { useCore(k) { kernel = k && k.logMel ? k : null; }, get kernel() { return kernel ? 'zig' : 'js'; }, load, transcribe, cached, forget, logMel, setPack, get pack() { return packName; }, get packBytes() { return packBytes(); }, get languages() { return vocab?.langs ? Object.keys(vocab.langs) : null; }, get ready() { return !!(enc && dec && vocab); } };
 })();
