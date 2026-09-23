@@ -10,6 +10,8 @@
     { name: 'decoder-merged.onnx', parts: ['decoder-merged.onnx.00', 'decoder-merged.onnx.01', 'decoder-merged.onnx.02'], sha: 'c0592d0749413c960569e1c7fb806b060d5d18f3ebad4a95cbf9a77dc6e9be52', bytes: 30718858 },
     { name: 'tokens.json', sha: 'aaaee82ab6816c47c1e361c64e2220a03b8c246fd04e997261b7d0ca6067f8a7', bytes: 508246 }
   ];
+  // " Um, uh, so, like, hmm, I mean, you know," in the model's tokenizer (rev 2575352d).
+  const VERBATIM_PROMPT = [21039, 11, 21480, 11, 523, 11, 588, 11, 289, 3020, 11, 314, 1612, 11, 345, 760, 11];
   const PACK_BYTES = PACK.reduce((a, f) => a + f.bytes, 0);
   let kernel = null, enc = null, dec = null, vocab = null, filters = null, cosT = null, sinT = null, win = null, loading = null;
 
@@ -125,14 +127,17 @@
   // Greedy decode of one window of up to 30 s of 16 kHz mono audio. With
   // timestamps on, the model's own <|t|> tokens split the text into timed
   // segments, using the standard pairing and monotonic rules.
-  async function transcribe(pcm, { maxTokens = 180, timestamps = true } = {}) {
+  async function transcribe(pcm, { maxTokens = 180, timestamps = true, verbatim = true } = {}) {
     await load();
     const t0 = performance.now();
     const feats = new ort.Tensor('float32', logMel(pcm), [1, NMEL, NFRAMES]);
     const eo = await enc.run({ [enc.inputNames[0]]: feats }), hidden = eo[enc.outputNames[0]];
     const t1 = performance.now();
     const V = 51864, TS = vocab.noTimestamps + 1, dur = Math.min(pcm.length, NSAMPLES) / SR;
-    const ids = timestamps ? [vocab.sot] : [vocab.sot, vocab.noTimestamps], outIds = [];
+    // Verbatim mode primes the decoder with a previous-text prompt full of fillers,
+    // which makes Whisper keep "um" and "uh" instead of tidying them away.
+    const prompt = verbatim ? [50360, ...VERBATIM_PROMPT] : [];
+    const ids = [...prompt, ...(timestamps ? [vocab.sot] : [vocab.sot, vocab.noTimestamps])], outIds = [];
     let lastTs = 0; const cache = { past: null };
     for (let step = 0; step < maxTokens; step++) {
       const { logits, off } = await step_(ids, hidden, cache);
