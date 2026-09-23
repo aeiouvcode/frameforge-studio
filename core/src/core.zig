@@ -137,3 +137,103 @@ export fn ff_luma_hist(px_ptr: usize, px_len: usize, step: u32, out_ptr: usize) 
     if (count == 0) return 0;
     return @intFromFloat(sum / @as(f64, @floatFromInt(count)) * 1000.0);
 }
+
+/// Composite one RGBA8 layer onto an RGBA8 frame (straight alpha, like ImageData).
+/// inv: 6 f32 inverse affine [a,b,c,d,e,f] mapping dst pixel centre (x,y) to
+/// src coords: sx = a*x + c*y + e, sy = b*x + d*y + f. Bilinear sampling,
+/// transparent outside the source. blend: 0 normal, 1 screen, 2 multiply, 3 add.
+/// bbox: 4 i32 [x0,y0,x1,y1] destination rows/cols to visit (clamped here).
+export fn ff_composite(dst_ptr: usize, dw: u32, dh: u32, src_ptr: usize, sw: u32, sh: u32, inv_ptr: usize, opacity: f32, blend: u32, bbox_ptr: usize) void {
+    if (sw == 0 or sh == 0 or opacity <= 0) return;
+    const dst: [*]u8 = @ptrFromInt(dst_ptr);
+    const src: [*]const u8 = @ptrFromInt(src_ptr);
+    const m: [*]const f32 = @ptrFromInt(inv_ptr);
+    const bb: [*]const i32 = @ptrFromInt(bbox_ptr);
+    const x0: usize = @intCast(std.math.clamp(bb[0], 0, @as(i32, @intCast(dw))));
+    const y0: usize = @intCast(std.math.clamp(bb[1], 0, @as(i32, @intCast(dh))));
+    const x1: usize = @intCast(std.math.clamp(bb[2], 0, @as(i32, @intCast(dw))));
+    const y1: usize = @intCast(std.math.clamp(bb[3], 0, @as(i32, @intCast(dh))));
+    const swf: f32 = @floatFromInt(sw);
+    const shf: f32 = @floatFromInt(sh);
+    const op = clampf(opacity, 0, 1);
+    var y = y0;
+    while (y < y1) : (y += 1) {
+        const fy: f32 = @as(f32, @floatFromInt(y)) + 0.5;
+        var x = x0;
+        while (x < x1) : (x += 1) {
+            const fx: f32 = @as(f32, @floatFromInt(x)) + 0.5;
+            const sx = m[0] * fx + m[2] * fy + m[4] - 0.5;
+            const sy = m[1] * fx + m[3] * fy + m[5] - 0.5;
+            if (sx <= -1 or sy <= -1 or sx >= swf or sy >= shf) continue;
+            const ix0f = @floor(sx);
+            const iy0f = @floor(sy);
+            const tx = sx - ix0f;
+            const ty = sy - iy0f;
+            const ix0: i32 = @intFromFloat(ix0f);
+            const iy0: i32 = @intFromFloat(iy0f);
+            // Premultiplied bilinear so transparent edges do not bleed colour.
+            var acc = [4]f32{ 0, 0, 0, 0 };
+            const interior = ix0 >= 0 and iy0 >= 0 and ix0 + 1 < @as(i32, @intCast(sw)) and iy0 + 1 < @as(i32, @intCast(sh));
+            if (interior) {
+                const p00 = (@as(usize, @intCast(iy0)) * sw + @as(usize, @intCast(ix0))) * 4;
+                const p10 = p00 + 4;
+                const p01 = p00 + sw * 4;
+                const p11 = p01 + 4;
+                const w00 = (1 - tx) * (1 - ty);
+                const w10 = tx * (1 - ty);
+                const w01 = (1 - tx) * ty;
+                const w11 = tx * ty;
+                if ((src[p00 + 3] & src[p10 + 3] & src[p01 + 3] & src[p11 + 3]) == 255) {
+                    // Opaque source: plain bilinear, no premultiply.
+                    inline for (0..3) |c| acc[c] = @as(f32, @floatFromInt(src[p00 + c])) * w00 + @as(f32, @floatFromInt(src[p10 + c])) * w10 + @as(f32, @floatFromInt(src[p01 + c])) * w01 + @as(f32, @floatFromInt(src[p11 + c])) * w11;
+                    acc[3] = 1;
+                } else {
+                    const idx = [4]usize{ p00, p10, p01, p11 };
+                    const ws = [4]f32{ w00, w10, w01, w11 };
+                    inline for (0..4) |k| {
+                        const w = ws[k] * @as(f32, @floatFromInt(src[idx[k] + 3])) / 255.0;
+                        acc[0] += @as(f32, @floatFromInt(src[idx[k]])) * w;
+                        acc[1] += @as(f32, @floatFromInt(src[idx[k] + 1])) * w;
+                        acc[2] += @as(f32, @floatFromInt(src[idx[k] + 2])) * w;
+                        acc[3] += w;
+                    }
+                }
+            } else inline for (0..4) |k| {
+                const ox: i32 = if (k & 1 == 1) 1 else 0;
+                const oy: i32 = if (k & 2 == 2) 1 else 0;
+                const wx = if (ox == 1) tx else 1 - tx;
+                const wy = if (oy == 1) ty else 1 - ty;
+                const px = ix0 + ox;
+                const py = iy0 + oy;
+                if (px >= 0 and py >= 0 and px < @as(i32, @intCast(sw)) and py < @as(i32, @intCast(sh))) {
+                    const si = (@as(usize, @intCast(py)) * sw + @as(usize, @intCast(px))) * 4;
+                    const w = wx * wy * @as(f32, @floatFromInt(src[si + 3])) / 255.0;
+                    acc[0] += @as(f32, @floatFromInt(src[si])) * w;
+                    acc[1] += @as(f32, @floatFromInt(src[si + 1])) * w;
+                    acc[2] += @as(f32, @floatFromInt(src[si + 2])) * w;
+                    acc[3] += w;
+                }
+            }
+            if (acc[3] <= 0.0) continue;
+            const a = acc[3] * op;
+            const di = (y * dw + x) * 4;
+            const da = @as(f32, @floatFromInt(dst[di + 3])) / 255.0;
+            const oa = a + da * (1 - a);
+            inline for (0..3) |c| {
+                const s = acc[c] / acc[3];
+                const d: f32 = @floatFromInt(dst[di + c]);
+                const mixed: f32 = switch (blend) {
+                    1 => 255.0 - (255.0 - s) * (255.0 - d) / 255.0,
+                    2 => s * d / 255.0,
+                    3 => @min(255.0, s + d),
+                    else => s,
+                };
+                // Blend result replaces the source colour where the layer overlaps an opaque backdrop.
+                const sc = mixed * da + s * (1 - da);
+                const outc = if (dst[di + 3] == 255) sc * a + d * (1 - a) else (sc * a + d * da * (1 - a)) / oa;
+                dst[di + c] = @intFromFloat(@floor(clampf(outc, 0, 255) + 0.5));
+            }
+            dst[di + 3] = @intFromFloat(@floor(clampf(oa * 255.0, 0, 255) + 0.5));
+        }
+    }
+}

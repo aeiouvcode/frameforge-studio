@@ -8,7 +8,7 @@ A local-first browser video editor. Imported media, project state, captions and 
 
 ## Editing
 
-Timeline editing with magnetic snapping, ripple delete, split, frame nudging (`,` `.`), slip (`[` `]`, moves the source window inside a fixed clip) and roll (`Alt`+`[` `]`, moves a shared edit point, crossfade overlaps preserved). Shift steps by 10 frames. The Inspector exposes Slip and Roll buttons for touch.
+Timeline editing with magnetic snapping, ripple delete, split, frame nudging (`,` `.`), slip (`[` `]`, moves the source window inside a fixed clip), roll (`Alt`+`[` `]`, moves a shared edit point, crossfade overlaps preserved) and slide (`Ctrl`+`[` `]`, moves a clip between its neighbours, which absorb the change). Shift steps by 10 frames. The Inspector has a Slip / Roll / Slide mode switch with frame steppers for touch.
 
 ## Architecture
 

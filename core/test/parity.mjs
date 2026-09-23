@@ -6,7 +6,7 @@ const grab=n=>{const i=html.indexOf('function '+n+'(');let d=0,j=html.indexOf('{
 const ctx=new Function('ffCore',grab('sampleCube')+grab('applyLutPixels')+grab('parseCube')+';return {sampleCube,applyLutPixels,parseCube}')(null);
 new Function(fs.readFileSync(new URL('../ffcore-bridge.js',import.meta.url),'utf8'))();ctx.createFFCore=globalThis.createFFCore;
 const core=ctx.createFFCore(new WebAssembly.Module(fs.readFileSync(new URL('../frameforge-core.wasm',import.meta.url))));
-let fails=0;const ok=(c,m)=>{console.log((c?'PASS ':'FAIL ')+m);if(!c)fails++};
+const bench=(f,it)=>{f();const t=performance.now();for(let i=0;i<it;i++)f();return (performance.now()-t)/it};let fails=0;const ok=(c,m)=>{console.log((c?'PASS ':'FAIL ')+m);if(!c)fails++};
 // deterministic RNG
 let s=12345;const rnd=()=>((s=(s*1103515245+12345)>>>0)/4294967296);
 // Build a non-trivial 33^3 LUT (teal/orange grade with gamma) in .cube text so parseCube is exercised.
@@ -21,10 +21,16 @@ for(const [n,dmin,dmax] of [[33,[0,0,0],[1,1,1]],[17,[0,0,0],[1,1,1]],[65,[0,0,0
 {const n=48000*7+13,x=new Float32Array(n);for(let i=0;i<n;i++)x[i]=Math.sin(i*.013)*(rnd()-.5)*1.8;const bins=80,p=core.peaks(x,bins);let bad=0;for(let k=0;k<bins;k++){let m=0;for(let j=Math.floor(n*k/bins);j<Math.floor(n*(k+1)/bins);j++)m=Math.max(m,Math.abs(x[j]));if(Math.abs(m-p[k])>1e-7)bad++}ok(bad===0,`Waveform peaks exact over ${n} samples, ${bins} bins`)}
 // luma histogram vs JS updateScope math
 {const W=1280,H=720,d=new Uint8ClampedArray(W*H*4);for(let i=0;i<d.length;i++)d[i]=(rnd()*256)|0;const bins=new Uint32Array(64);let avg=0,c=0;for(let i=0;i<d.length;i+=64){let y=.2126*d[i]+.7152*d[i+1]+.0722*d[i+2];bins[Math.min(63,y>>2)]++;avg+=y;c++}avg/=c;const z=core.lumaHist(d,16);let bd=0;for(let i=0;i<64;i++)bd+=Math.abs(bins[i]-z.bins[i]);ok(bd<=c*0.001&&Math.abs(avg-z.avg)<0.05,`Luma scope histogram: bin delta ${bd}/${c}, avg ${avg.toFixed(3)} vs ${z.avg.toFixed(3)}`)}
+// compositor: Zig vs f64 JS reference of the same straight-alpha bilinear source-over
+function refComposite(dst,dw,dh,src,sw,sh,m,op,blend){const [a,b,c,d,e,f]=m,det=a*d-b*c,iv=[d/det,-b/det,-c/det,a/det,(c*f-d*e)/det,(b*e-a*f)/det];for(let y=0;y<dh;y++)for(let x=0;x<dw;x++){const fx=x+.5,fy=y+.5,sx=iv[0]*fx+iv[2]*fy+iv[4]-.5,sy=iv[1]*fx+iv[3]*fy+iv[5]-.5;if(sx<=-1||sy<=-1||sx>=sw||sy>=sh)continue;const x0=Math.floor(sx),y0=Math.floor(sy),tx=sx-x0,ty=sy-y0,acc=[0,0,0,0];for(let k=0;k<4;k++){const ox=k&1,oy=k>>1&1,w0=(ox?tx:1-tx)*(oy?ty:1-ty),px=x0+ox,py=y0+oy;if(px<0||py<0||px>=sw||py>=sh)continue;const si=(py*sw+px)*4,w=w0*src[si+3]/255;acc[0]+=src[si]*w;acc[1]+=src[si+1]*w;acc[2]+=src[si+2]*w;acc[3]+=w}if(acc[3]<=0)continue;const A=acc[3]*op,di=(y*dw+x)*4,da=dst[di+3]/255,oa=A+da*(1-A);for(let ch=0;ch<3;ch++){const s=acc[ch]/acc[3],dd=dst[di+ch],mx=blend===1?255-(255-s)*(255-dd)/255:blend===2?s*dd/255:blend===3?Math.min(255,s+dd):s,sc=mx*da+s*(1-da);dst[di+ch]=Math.floor(Math.min(255,Math.max(0,(sc*A+dd*da*(1-A))/oa))+.5)}dst[di+3]=Math.floor(Math.min(255,Math.max(0,oa*255))+.5)}return dst}
+{const dw=320,dh=180,sw=200,sh=120;const src=new Uint8ClampedArray(sw*sh*4);for(let i=0;i<src.length;i++)src[i]=(rnd()*256)|0;const base=new Uint8ClampedArray(dw*dh*4);for(let i=0;i<base.length;i++)base[i]=i%4===3?255:(rnd()*256)|0;
+ const cases=[['identity',[1,0,0,1,40,20],1,0],['scale+rotate',[Math.cos(.4)*1.3,Math.sin(.4)*1.3,-Math.sin(.4)*1.3,Math.cos(.4)*1.3,120,-10],.8,0],['screen',[0.7,0,0,0.7,10,30],.9,1],['multiply',[1.1,0,0,1.1,-20,-5],1,2],['add',[1,0.1,0,1,60,40],.5,3]];
+ for(const [name,m,op,bl] of cases){const a=refComposite(new Uint8ClampedArray(base),dw,dh,src,sw,sh,m,op,bl),z=core.composite(new Uint8ClampedArray(base),dw,dh,src,sw,sh,m,op,bl);let mx=0,n=0;for(let i=0;i<a.length;i++){const d=Math.abs(a[i]-z[i]);if(d){n++;mx=Math.max(mx,d)}}ok(mx<=1&&n/a.length<0.01,`Composite ${name}: max diff ${mx}, differing ${(n/a.length*100).toFixed(3)}%`)}
+ {const dw2=1920,dh2=1080,s2=new Uint8ClampedArray(dw2*dh2*4).map((_,i)=>i%4===3?255:(i*37)&255),b2=new Uint8ClampedArray(dw2*dh2*4).fill(255),m=[Math.cos(.1),Math.sin(.1),-Math.sin(.1),Math.cos(.1),30,-40];const js=bench(()=>refComposite(new Uint8ClampedArray(b2),dw2,dh2,s2,dw2,dh2,m,.8,0),2),zg=bench(()=>core.composite(new Uint8ClampedArray(b2),dw2,dh2,s2,dw2,dh2,m,.8,0),4);console.log(`BENCH composite 1080p opaque video layer, rotated, 80% opacity: JS ${js.toFixed(1)} ms, Zig ${zg.toFixed(1)} ms, ${(js/zg).toFixed(1)}x`)}}
 // security: no imports
 ok(WebAssembly.Module.imports(new WebAssembly.Module(fs.readFileSync(new URL('../frameforge-core.wasm',import.meta.url)))).length===0,'Core module has zero imports (no host/network capability)');
 // benchmark
-const bench=(f,it)=>{f();const t=performance.now();for(let i=0;i<it;i++)f();return (performance.now()-t)/it};
+
 for(const [W,H] of [[480,270],[1920,1080]]){const lut=ctx.parseCube(cube(33));const px=new Uint8ClampedArray(W*H*4);for(let i=0;i<px.length;i++)px[i]=(rnd()*256)|0;
   const it=W>1000?2:10;const js=bench(()=>ctx.applyLutPixels({data:new Uint8ClampedArray(px)},lut),it),zg=bench(()=>core.lutApply(new Uint8ClampedArray(px),lut),it);
   console.log(`BENCH LUT ${W}x${H}: JS ${js.toFixed(2)} ms, Zig ${zg.toFixed(2)} ms, ${(js/zg).toFixed(1)}x`)}

@@ -45,6 +45,15 @@
         u8().set(data,pp);const avg=x.ff_luma_hist(pp,data.length,step,op)/1000;
         return {bins:u32().slice(op>>2,(op>>2)+64),avg};
       },
+      composite(dst,dw,dh,src,sw,sh,m,opacity=1,blend=0){
+        const [a,b,c,d,e,f]=m,det=a*d-b*c;if(!det)return dst;
+        const inv=[d/det,-b/det,-c/det,a/det,(c*f-d*e)/det,(b*e-a*f)/det];
+        const xs=[e,a*sw+e,c*sh+e,a*sw+c*sh+e],ys=[f,b*sw+f,d*sh+f,b*sw+d*sh+f];
+        const bb=[Math.floor(Math.min(...xs))-1,Math.floor(Math.min(...ys))-1,Math.ceil(Math.max(...xs))+1,Math.ceil(Math.max(...ys))+1];
+        const dp=region('cdst',dst.length),sp=region('csrc',src.length),mp=region('cinv',24),bp=region('cbb',16);
+        u8().set(dst,dp);u8().set(src,sp);f32().set(inv,mp>>2);new Int32Array(x.memory.buffer).set(bb,bp>>2);
+        x.ff_composite(dp,dw,dh,sp,sw,sh,mp,opacity,blend,bp);dst.set(u8().subarray(dp,dp+dst.length));return dst;
+      },
       memoryBytes(){return x.memory.buffer.byteLength}
     };
   }
