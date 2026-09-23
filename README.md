@@ -6,6 +6,10 @@ A local-first browser video editor. Imported media, project state, captions and 
 
 **Live:** https://aeiouvcode.github.io/frameforge-studio/
 
+## Editing
+
+Timeline editing with magnetic snapping, ripple delete, split, frame nudging (`,` `.`), slip (`[` `]`, moves the source window inside a fixed clip) and roll (`Alt`+`[` `]`, moves a shared edit point, crossfade overlaps preserved). Shift steps by 10 frames. The Inspector exposes Slip and Roll buttons for touch.
+
 ## Architecture
 
 FrameForge is a JavaScript shell around a native core written in [Zig](https://ziglang.org/) and compiled to WebAssembly.
