@@ -4,17 +4,24 @@
 (() => {
   'use strict';
   const SR = 16000, NFFT = 400, HOP = 160, NMEL = 80, NFRAMES = 3000, NSAMPLES = 480000;
-  // Two packs: English-only tiny.en (default) and the multilingual tiny model.
+  // Three packs: English-only tiny.en (default), multilingual tiny, and an optional
+  // multilingual small pack (Whisper small, 244M params, int8) for higher accuracy.
   const PACKS = {
-    en: { base: './vendor/models/whisper-tiny-en/', opfs: 'ff-speech-tiny-en', files: [
+    en: { base: './vendor/models/whisper-tiny-en/', opfs: 'ff-speech-tiny-en', heads: 6, files: [
       { name: 'encoder.onnx', sha: '21712ecbe2d1078eaa206b41218a6dff945eb9ac0854b55fd584e8bc88b20368', bytes: 10124977 },
       { name: 'decoder-merged.onnx', parts: ['decoder-merged.onnx.00', 'decoder-merged.onnx.01', 'decoder-merged.onnx.02'], sha: 'c0592d0749413c960569e1c7fb806b060d5d18f3ebad4a95cbf9a77dc6e9be52', bytes: 30718858 },
       { name: 'tokens.json', sha: 'aaaee82ab6816c47c1e361c64e2220a03b8c246fd04e997261b7d0ca6067f8a7', bytes: 508246 }
     ] },
-    multi: { base: './vendor/models/whisper-tiny/', opfs: 'ff-speech-tiny', files: [
+    multi: { base: './vendor/models/whisper-tiny/', opfs: 'ff-speech-tiny', heads: 6, files: [
       { name: 'encoder.onnx', sha: '03ff3c99ce804f79a42afd6212c9492eb75e55625926de66f8fc192e9567d336', bytes: 10124977 },
       { name: 'decoder-merged.onnx', parts: ['decoder-merged.onnx.00', 'decoder-merged.onnx.01', 'decoder-merged.onnx.02'], sha: '25e807a962b6349356d0ea5d0dfe530b7e5bf0e2a484aeca0359d03143faddd3', bytes: 30719241 },
       { name: 'tokens.json', sha: '9c6aae2908bbef3c7ac331e5ed0d7782ba4704b19ca22bb65922d374b018807c', bytes: 565275 }
+    ] },
+    // onnx-community/whisper-small rev 36050c46 (int8). Same tokenizer as tiny, so tokens.json is shared.
+    small: { base: './vendor/models/whisper-small/', opfs: 'ff-speech-small', heads: 12, files: [
+      { name: 'encoder.onnx', parts: ['encoder.onnx.00', 'encoder.onnx.01', 'encoder.onnx.02', 'encoder.onnx.03', 'encoder.onnx.04', 'encoder.onnx.05', 'encoder.onnx.06', 'encoder.onnx.07', 'encoder.onnx.08'], sha: '2601c9eb2d345c5916d4576d36f663a7c96589740fb2273828c48c3fc2c7db75', bytes: 92326127 },
+      { name: 'decoder-merged.onnx', parts: ['decoder-merged.onnx.00', 'decoder-merged.onnx.01', 'decoder-merged.onnx.02', 'decoder-merged.onnx.03', 'decoder-merged.onnx.04', 'decoder-merged.onnx.05', 'decoder-merged.onnx.06', 'decoder-merged.onnx.07', 'decoder-merged.onnx.08', 'decoder-merged.onnx.09', 'decoder-merged.onnx.10', 'decoder-merged.onnx.11', 'decoder-merged.onnx.12', 'decoder-merged.onnx.13', 'decoder-merged.onnx.14', 'decoder-merged.onnx.15'], sha: 'ec07c3cbb64172c39791e26ee870a65ac22b458c36722bfe2776b3dbf741e0c9', bytes: 156750845 },
+      { name: 'tokens.json', path: '../whisper-tiny/tokens.json', sha: '9c6aae2908bbef3c7ac331e5ed0d7782ba4704b19ca22bb65922d374b018807c', bytes: 565275 }
     ] }
   };
   let packName = 'en', BASE = PACKS.en.base, PACK = PACKS.en.files;
@@ -45,13 +52,14 @@
     }
     // Large files ship as fixed-size parts (static-host upload limits); the SHA-256 covers the joined file.
     const parts = []; let got = 0;
-    for (const name of f.parts || [f.name]) {
+    for (const name of f.parts || [f.path || f.name]) {
       const res = await fetch(BASE + name, { credentials: 'omit', cache: 'no-cache' });
       if (!res.ok) throw Error(`Speech model file missing (${res.status})`);
       const reader = res.body.getReader();
       for (;;) { const { done, value } = await reader.read(); if (done) break; parts.push(value); got += value.length; onBytes(value.length); if (got > f.bytes) throw Error('Speech model larger than expected'); }
     }
     const buf = new Uint8Array(got); let o = 0; for (const p of parts) { buf.set(p, o); o += p.length; }
+    parts.length = 0; // let the chunk copies go before hashing (matters for the 157 MB decoder)
     if (hex(await crypto.subtle.digest('SHA-256', buf)) !== f.sha) throw Error('Speech model failed its integrity check');
     if (dir) { try { const w = await (await dir.getFileHandle(f.name, { create: true })).createWritable(); await w.write(buf); await w.close(); } catch { /* cache is optional */ } }
     return buf.buffer;
@@ -61,7 +69,7 @@
     for (const f of PACK) { try { if ((await (await dir.getFileHandle(f.name)).getFile()).size !== f.bytes) return false; } catch { return false; } }
     return true;
   }
-  async function forget() { try { await (await navigator.storage.getDirectory()).removeEntry(PACKS[packName].opfs, { recursive: true }); } catch { } enc = dec = vocab = null; loading = null; }
+  async function forget(name = packName) { try { await (await navigator.storage.getDirectory()).removeEntry(PACKS[name].opfs, { recursive: true }); } catch { } if (name === packName) { enc = dec = vocab = null; loading = null; } else delete live_[name]; }
 
   function load(onProgress = () => {}) {
     if (enc && dec && vocab) return Promise.resolve();
@@ -224,7 +232,7 @@
 
   // One decoder step. The merged export keeps a key/value cache between steps,
   // so after the prompt only the newest token is fed; older exports re-run the sequence.
-  const EMPTY = () => new ort.Tensor('float32', new Float32Array(0), [1, 6, 0, 64]);
+  const EMPTY = () => new ort.Tensor('float32', new Float32Array(0), [1, PACKS[packName].heads, 0, 64]);
   async function step_(ids, hidden, cache) {
     const V = vocab.V, cached = dec.inputNames.includes('use_cache_branch');
     if (!cached) {
