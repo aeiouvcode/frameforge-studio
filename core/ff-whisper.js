@@ -159,7 +159,7 @@
       if (best === vocab.eos || best < 0) break;
       ids.push(best); outIds.push(best);
       if (isTs(best)) lastTs = (best - TS) * 0.02;
-      if (outIds.length > 12 && outIds.slice(-6).every(v => v === best)) break; // stuck on a repeat
+      if (stuck(outIds) || outIds.length > 12 + dur * 10) break; // hallucination guard
     }
     const segments = []; let cur = null, words = [];
     for (const id of outIds) {
@@ -172,6 +172,17 @@
     if (words.length) { const text = detok(words); if (text) segments.push({ start: cur ? cur.start : (segments.at(-1)?.end ?? 0), end: dur, text }); }
     for (const sg of segments) { sg.start = Math.max(0, Math.min(dur, sg.start)); sg.end = Math.max(sg.start + 0.2, Math.min(dur, sg.end)); }
     return { text: detok(outIds), segments, tokens: outIds.length, encodeMs: Math.round(t1 - t0), totalMs: Math.round(performance.now() - t0) };
+  }
+
+  // True when the tail is one short token pattern (1-4 tokens) repeated four or more times.
+  function stuck(ids) {
+    for (let p = 1; p <= 4; p++) {
+      if (ids.length < p * 4) continue;
+      let rep = true;
+      for (let i = ids.length - p * 3; i < ids.length && rep; i++) if (ids[i] !== ids[i - p]) rep = false;
+      if (rep) return true;
+    }
+    return false;
   }
 
   // One decoder step. The merged export keeps a key/value cache between steps,

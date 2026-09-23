@@ -10,4 +10,4 @@ b708b57109e715b16daf80fe58609cd1fdd7b16e23418fb8488367e4b77c7bfb  core/ffcore-br
 025710485bc080009c900c61efe055b71c53c9b980510c788ed2977419061354  vendor/models/whisper-tiny-en/decoder-merged.onnx.00
 9318de245af96e1d7a658092981248c8b886977739c66d05f210a08467e54e81  vendor/models/whisper-tiny-en/decoder-merged.onnx.01
 781403891d99c64e1ec9074b49cc41581f197a18878c45c048496ce1874dad43  vendor/models/whisper-tiny-en/decoder-merged.onnx.02
-295f921b2570b68019ea83c774a066805f2d2b7f48f5fb925c4f8d3b636db9f3  core/ff-whisper.js
+c06b29fac98960afc1f030005001a6b9c210c845e70ffccc9a02362eb3c72757  core/ff-whisper.js
