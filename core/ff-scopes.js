@@ -91,5 +91,25 @@
       return hot / (d.length / 4);
     };
   }
-  root.ffScopes = { OUT_W, OUT_H, VK, ycc, makeCpu, makeZebra, graticule };
+
+  // False colour: luma bands painted over the preview so exposure reads at a
+  // glance. Bands are percent of full range; between bands the pixel shows as grey.
+  const FC_BANDS = [[0, 3, [106, 44, 145], 'Crushed'], [3, 10, [31, 79, 216], 'Shadow'], [38, 48, [63, 174, 74], 'Mid grey'], [55, 65, [229, 143, 176], 'Skin'], [90, 97, [242, 209, 58], 'Bright'], [97, 101, [229, 50, 45], 'Clipped']];
+  function makeFalseColour() {
+    let tmp = null, out = null, img = null; const lut = new Uint8ClampedArray(256 * 3);
+    for (let v = 0; v < 256; v++) { const pc = v / 255 * 100, b = FC_BANDS.find(([a, z]) => pc >= a && pc < z), c = b ? b[2] : [v * .8, v * .8, v * .8]; lut.set(c, v * 3); }
+    return function draw(ctx, src) {
+      const W = Math.min(480, src.width), H = Math.max(1, Math.round(W * src.height / src.width));
+      tmp ||= document.createElement('canvas'); if (tmp.width !== W || tmp.height !== H) { tmp.width = W; tmp.height = H; out = null; }
+      const lx = tmp.getContext('2d', { willReadFrequently: true }); lx.drawImage(src, 0, 0, W, H);
+      const d = lx.getImageData(0, 0, W, H).data;
+      if (!out) { out = document.createElement('canvas'); out.width = W; out.height = H; img = new ImageData(W, H); }
+      const o = img.data, hist = new Uint32Array(FC_BANDS.length + 1);
+      for (let i = 0; i < d.length; i += 4) { const y = (.2126 * d[i] + .7152 * d[i + 1] + .0722 * d[i + 2]) | 0, k = y * 3; o[i] = lut[k]; o[i + 1] = lut[k + 1]; o[i + 2] = lut[k + 2]; o[i + 3] = 255; if (y >= 248) hist[5]++; }
+      out.getContext('2d').putImageData(img, 0, 0);
+      ctx.save(); ctx.setTransform(1, 0, 0, 1, 0, 0); ctx.imageSmoothingEnabled = true; ctx.drawImage(out, 0, 0, src.width, src.height); ctx.restore();
+      return hist[5] / (d.length / 4);
+    };
+  }
+  root.ffScopes = { OUT_W, OUT_H, VK, ycc, makeCpu, makeZebra, makeFalseColour, FC_BANDS, graticule };
 })(window);
