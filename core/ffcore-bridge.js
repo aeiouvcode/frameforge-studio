@@ -54,6 +54,11 @@
         u8().set(dst,dp);u8().set(src,sp);f32().set(inv,mp>>2);new Int32Array(x.memory.buffer).set(bb,bp>>2);
         x.ff_composite(dp,dw,dh,sp,sw,sh,mp,opacity,blend,bp);dst.set(u8().subarray(dp,dp+dst.length));return dst;
       },
+      logMel(sig,live,win,cos,sin,filt){
+        const sp=region('msig',sig.byteLength),wp=region('mwin',win.byteLength),cp=region('mcos',cos.byteLength),np=region('msin',sin.byteLength),fp=region('mfilt',filt.byteLength),op=region('mout',80*live*4);
+        f32().set(sig,sp>>2);f32().set(win,wp>>2);f32().set(cos,cp>>2);f32().set(sin,np>>2);f32().set(filt,fp>>2);
+        x.ff_log_mel(sp,live,wp,cp,np,fp,op);return f32().slice(op>>2,(op>>2)+80*live);
+      },
       memoryBytes(){return x.memory.buffer.byteLength}
     };
   }

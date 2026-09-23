@@ -11,7 +11,7 @@
     { name: 'tokens.json', sha: 'aaaee82ab6816c47c1e361c64e2220a03b8c246fd04e997261b7d0ca6067f8a7', bytes: 508246 }
   ];
   const PACK_BYTES = PACK.reduce((a, f) => a + f.bytes, 0);
-  let enc = null, dec = null, vocab = null, filters = null, cosT = null, sinT = null, win = null, loading = null;
+  let kernel = null, enc = null, dec = null, vocab = null, filters = null, cosT = null, sinT = null, win = null, loading = null;
 
   const hex = buf => [...new Uint8Array(buf)].map(b => b.toString(16).padStart(2, '0')).join('');
   async function opfsDir() {
@@ -93,7 +93,8 @@
     cosT = new Float32Array(nf * NFFT); sinT = new Float32Array(nf * NFFT);
     for (let k = 0; k < nf; k++) for (let n = 0; n < NFFT; n++) { const a = 2 * Math.PI * k * n / NFFT; cosT[k * NFFT + n] = Math.cos(a); sinT[k * NFFT + n] = Math.sin(a); }
   }
-  function logMel(pcm) {
+  function logMel(pcm, { js = false } = {}) {
+    const useKernel = !js;
     setup();
     const x = new Float32Array(NSAMPLES); x.set(pcm.subarray(0, NSAMPLES));
     const pad = NFFT / 2, padded = new Float32Array(NSAMPLES + NFFT);
@@ -101,6 +102,14 @@
     const nf = NFFT / 2 + 1, out = new Float32Array(NMEL * NFRAMES), frame = new Float32Array(NFFT), pow = new Float32Array(nf);
     const live = Math.min(NFRAMES, Math.ceil((Math.min(pcm.length, NSAMPLES) + NFFT) / HOP) + 1);
     let max = -Infinity;
+    if (kernel && useKernel) {
+      try {
+        const m = kernel.logMel(padded, live, win, cosT, sinT, filters);
+        for (let mm = 0; mm < NMEL; mm++) for (let t = 0; t < NFRAMES; t++) { const v = t < live ? m[mm * live + t] : -10; out[mm * NFRAMES + t] = v; if (v > max) max = v; }
+        for (let i = 0; i < out.length; i++) out[i] = (Math.max(out[i], max - 8) + 4) / 4;
+        return out;
+      } catch { kernel = null; }
+    }
     for (let t = 0; t < NFRAMES; t++) {
       if (t < live) {
         for (let n = 0; n < NFFT; n++) frame[n] = padded[t * HOP + n] * win[n];
@@ -112,26 +121,59 @@
     return out;
   }
 
-  // Greedy decode of one window of up to 30 s of 16 kHz mono audio.
-  async function transcribe(pcm, { maxTokens = 160 } = {}) {
+  // Greedy decode of one window of up to 30 s of 16 kHz mono audio. With
+  // timestamps on, the model's own <|t|> tokens split the text into timed
+  // segments, using the standard pairing and monotonic rules.
+  async function transcribe(pcm, { maxTokens = 180, timestamps = true } = {}) {
     await load();
     const t0 = performance.now();
     const feats = new ort.Tensor('float32', logMel(pcm), [1, NMEL, NFRAMES]);
     const eo = await enc.run({ [enc.inputNames[0]]: feats }), hidden = eo[enc.outputNames[0]];
     const t1 = performance.now();
-    const ids = [vocab.sot, vocab.noTimestamps], outIds = [], V = 51864;
+    const V = 51864, TS = vocab.noTimestamps + 1, dur = Math.min(pcm.length, NSAMPLES) / SR;
+    const ids = timestamps ? [vocab.sot] : [vocab.sot, vocab.noTimestamps], outIds = [];
+    let lastTs = 0;
     for (let step = 0; step < maxTokens; step++) {
       const inp = new ort.Tensor('int64', BigInt64Array.from(ids.map(BigInt)), [1, ids.length]);
       const feeds = {}; for (const n of dec.inputNames) feeds[n] = /hidden/.test(n) ? hidden : inp;
       const r = await dec.run(feeds), logits = r[dec.outputNames[0]].data, off = (ids.length - 1) * V;
-      let best = -1, bv = -Infinity;
-      for (let i = 0; i < V; i++) { if (vocab.mask[i] || i > vocab.eos) continue; if (step === 0 && vocab.beginSuppress.includes(i)) continue; const v = logits[off + i]; if (v > bv) { bv = v; best = i; } }
+      const isTs = i => i >= TS, prev = outIds[outIds.length - 1], prev2 = outIds[outIds.length - 2];
+      const allowText = !timestamps || !(outIds.length === 0 || (isTs(prev) && !isTs(prev2 ?? TS)));
+      const allowTs = timestamps && !(outIds.length && isTs(prev) && isTs(prev2 ?? TS));
+      const tsFloor = TS + Math.round(lastTs / 0.02), tsCeil = TS + Math.ceil(dur / 0.02);
+      let bestText = -1, bt = -Infinity, bestTs = -1, bts = -Infinity, tsMass = -Infinity, textMax = -Infinity;
+      for (let i = 0; i < V; i++) {
+        const v = logits[off + i];
+        if (i < TS) {
+          if (vocab.mask[i] || (i > vocab.eos && i < TS)) continue;
+          if (step === 0 && vocab.beginSuppress.includes(i)) continue;
+          if (i !== vocab.eos && !allowText) continue;
+          if (v > textMax) textMax = v;
+          if (v > bt) { bt = v; bestText = i; }
+        } else if (allowTs && i >= tsFloor && i <= tsCeil) {
+          tsMass = tsMass === -Infinity ? v : Math.max(tsMass, v) + Math.log1p(Math.exp(-Math.abs(tsMass - v)));
+          if (v > bts) { bts = v; bestTs = i; }
+        }
+      }
+      let best = bestText;
+      if (bestTs >= 0 && (bestText < 0 || tsMass > textMax)) best = bestTs;
       if (best === vocab.eos || best < 0) break;
       ids.push(best); outIds.push(best);
+      if (isTs(best)) lastTs = (best - TS) * 0.02;
       if (outIds.length > 12 && outIds.slice(-6).every(v => v === best)) break; // stuck on a repeat
     }
-    return { text: detok(outIds), tokens: outIds.length, encodeMs: Math.round(t1 - t0), totalMs: Math.round(performance.now() - t0) };
+    const segments = []; let cur = null, words = [];
+    for (const id of outIds) {
+      if (id >= TS) {
+        const t = (id - TS) * 0.02;
+        if (!cur) cur = { start: t };
+        else { cur.end = t; cur.text = detok(words); if (cur.text) segments.push(cur); cur = null; words = []; }
+      } else words.push(id);
+    }
+    if (words.length) { const text = detok(words); if (text) segments.push({ start: cur ? cur.start : (segments.at(-1)?.end ?? 0), end: dur, text }); }
+    for (const sg of segments) { sg.start = Math.max(0, Math.min(dur, sg.start)); sg.end = Math.max(sg.start + 0.2, Math.min(dur, sg.end)); }
+    return { text: detok(outIds), segments, tokens: outIds.length, encodeMs: Math.round(t1 - t0), totalMs: Math.round(performance.now() - t0) };
   }
 
-  window.ffWhisper = { load, transcribe, cached, forget, logMel, packBytes: PACK_BYTES, get ready() { return !!(enc && dec && vocab); } };
+  window.ffWhisper = { useCore(k) { kernel = k && k.logMel ? k : null; }, get kernel() { return kernel ? 'zig' : 'js'; }, load, transcribe, cached, forget, logMel, packBytes: PACK_BYTES, get ready() { return !!(enc && dec && vocab); } };
 })();

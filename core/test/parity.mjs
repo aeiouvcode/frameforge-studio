@@ -35,4 +35,8 @@ for(const [W,H] of [[480,270],[1920,1080]]){const lut=ctx.parseCube(cube(33));co
   const it=W>1000?2:10;const js=bench(()=>ctx.applyLutPixels({data:new Uint8ClampedArray(px)},lut),it),zg=bench(()=>core.lutApply(new Uint8ClampedArray(px),lut),it);
   console.log(`BENCH LUT ${W}x${H}: JS ${js.toFixed(2)} ms, Zig ${zg.toFixed(2)} ms, ${(js/zg).toFixed(1)}x`)}
 {const d=new Uint8ClampedArray(1920*1080*4);for(let i=0;i<d.length;i++)d[i]=(rnd()*256)|0;const js=bench(()=>{const b=new Uint32Array(64);let a=0;for(let i=0;i<d.length;i+=16){let y=.2126*d[i]+.7152*d[i+1]+.0722*d[i+2];b[Math.min(63,y>>2)]++;a+=y}},20),zg=bench(()=>core.lumaHist(d,4),20);console.log(`BENCH scope 1080p full-res: JS ${js.toFixed(2)} ms, Zig ${zg.toFixed(2)} ms`)}
+// speech front end: Zig log-mel vs the JS reference in ff-whisper.js
+{globalThis.window=globalThis;new Function(fs.readFileSync(new URL('../ff-whisper.js',import.meta.url),'utf8'))();const W=globalThis.ffWhisper;const n=16000*9,pcm=new Float32Array(n);for(let i=0;i<n;i++)pcm[i]=.4*Math.sin(i*2*Math.PI*220/16000)*Math.sin(i/9000)+.2*Math.sin(i*2*Math.PI*1375/16000)+(rnd()-.5)*.05;
+ W.useCore(null);const t0=performance.now(),a=W.logMel(pcm,{js:true}),tj=performance.now()-t0;W.useCore(core);const t1=performance.now(),b=W.logMel(pcm),tz=performance.now()-t1;let mx=0;for(let i=0;i<a.length;i++)mx=Math.max(mx,Math.abs(a[i]-b[i]));
+ ok(W.kernel==='zig'&&mx<1e-3,`Speech log-mel 80x3000: max abs diff ${mx.toExponential(2)} (normalised units)`);console.log(`BENCH log-mel 9 s audio: JS ${tj.toFixed(0)} ms, Zig ${tz.toFixed(0)} ms, ${(tj/tz).toFixed(1)}x`)}
 console.log(fails?`${fails} FAILED`:'ALL PASS');process.exit(fails?1:0);

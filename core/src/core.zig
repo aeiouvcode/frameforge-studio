@@ -237,3 +237,49 @@ export fn ff_composite(dst_ptr: usize, dw: u32, dh: u32, src_ptr: usize, sw: u32
         }
     }
 }
+
+// Log-mel front end for the speech model: windowed DFT power spectrum (n_fft 400,
+// hop 160) followed by an 80-band mel projection and log10, for `live` frames of a
+// reflect-padded 16 kHz signal. Tables (window, cos/sin, filters) come from JS so
+// both paths share one definition. Output layout: out[m * live + t].
+export fn ff_log_mel(sig_ptr: usize, live: u32, win_ptr: usize, cos_ptr: usize, sin_ptr: usize, filt_ptr: usize, out_ptr: usize) void {
+    const NFFT = 400;
+    const NF = 201;
+    const NMEL = 80;
+    const HOP = 160;
+    const V = @Vector(8, f32);
+    const sig: [*]const f32 = @ptrFromInt(sig_ptr);
+    const win: [*]const f32 = @ptrFromInt(win_ptr);
+    const cs: [*]const f32 = @ptrFromInt(cos_ptr);
+    const sn: [*]const f32 = @ptrFromInt(sin_ptr);
+    const filt: [*]const f32 = @ptrFromInt(filt_ptr);
+    const out: [*]f32 = @ptrFromInt(out_ptr);
+    var frame: [NFFT]f32 align(32) = undefined;
+    var pow: [NF + 7]f32 align(32) = undefined;
+    var t: u32 = 0;
+    while (t < live) : (t += 1) {
+        const base = @as(usize, t) * HOP;
+        for (0..NFFT) |n| frame[n] = sig[base + n] * win[n];
+        for (0..NF) |k| {
+            var re: V = @splat(0);
+            var im: V = @splat(0);
+            var n: usize = 0;
+            while (n < NFFT) : (n += 8) {
+                const f: V = frame[n..][0..8].*;
+                const c: V = cs[k * NFFT + n ..][0..8].*;
+                const s: V = sn[k * NFFT + n ..][0..8].*;
+                re += f * c;
+                im += f * s;
+            }
+            const r = @reduce(.Add, re);
+            const i = @reduce(.Add, im);
+            pow[k] = r * r + i * i;
+        }
+        for (0..NMEL) |m| {
+            var acc: f32 = 0;
+            const row = filt + m * NF;
+            for (0..NF) |k| acc += row[k] * pow[k];
+            out[m * live + t] = @log10(@max(acc, 1e-10));
+        }
+    }
+}
