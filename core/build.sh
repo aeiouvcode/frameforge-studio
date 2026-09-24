@@ -11,4 +11,5 @@ grep -v 'core/frameforge-core.wasm\|core/ffcore-bridge.js' ../vendor/SHA256SUMS 
 ( cd .. && sha256sum core/frameforge-core.wasm core/ffcore-bridge.js ) >> ../vendor/SHA256SUMS.tmp
 mv ../vendor/SHA256SUMS.tmp ../vendor/SHA256SUMS
 node test/parity.mjs
+node test/real-audio.mjs
 echo "core sha256 $HASH"
