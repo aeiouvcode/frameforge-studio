@@ -108,8 +108,9 @@ export fn ff_peaks(samples_ptr: usize, n: usize, bins: u32, out_ptr: usize) void
     if (b == 0) return;
     var k: usize = 0;
     while (k < b) : (k += 1) {
-        const start = n * k / b;
-        const end = n * (k + 1) / b;
+        // 64-bit index math: n * k overflows wasm32 usize for long audio at fine resolution.
+        const start: usize = @intCast(@as(u64, n) * @as(u64, k) / @as(u64, b));
+        const end: usize = @intCast(@as(u64, n) * @as(u64, k + 1) / @as(u64, b));
         var m: f32 = 0;
         var j = start;
         while (j < end) : (j += 1) m = @max(m, @abs(s[j]));

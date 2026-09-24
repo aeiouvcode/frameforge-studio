@@ -19,6 +19,7 @@ for(const [n,dmin,dmax] of [[33,[0,0,0],[1,1,1]],[17,[0,0,0],[1,1,1]],[65,[0,0,0
 }
 // peaks: exact vs brute force
 {const n=48000*7+13,x=new Float32Array(n);for(let i=0;i<n;i++)x[i]=Math.sin(i*.013)*(rnd()-.5)*1.8;const bins=80,p=core.peaks(x,bins);let bad=0;for(let k=0;k<bins;k++){let m=0;for(let j=Math.floor(n*k/bins);j<Math.floor(n*(k+1)/bins);j++)m=Math.max(m,Math.abs(x[j]));if(Math.abs(m-p[k])>1e-7)bad++}ok(bad===0,`Waveform peaks exact over ${n} samples, ${bins} bins`)}
+{const n=48000*180,x=new Float32Array(n);for(let i=0;i<n;i+=997)x[i]=((i*7919)%1000)/1000-.5;const bins=3600,p=core.peaks(x,bins);let bad=0;for(let k=0;k<bins;k++){let m=0;const a=Math.floor(n*k/bins),e=Math.floor(n*(k+1)/bins);for(let j=a;j<e;j++){const v=Math.abs(x[j]);if(v>m)m=v}if(Math.abs(m-p[k])>1e-7)bad++}ok(bad===0,`Waveform peaks exact over a 3-minute signal (${n} samples, ${bins} bins; ${bad} wrong)`)}
 // luma histogram vs JS updateScope math
 {const W=1280,H=720,d=new Uint8ClampedArray(W*H*4);for(let i=0;i<d.length;i++)d[i]=(rnd()*256)|0;const bins=new Uint32Array(64);let avg=0,c=0;for(let i=0;i<d.length;i+=64){let y=.2126*d[i]+.7152*d[i+1]+.0722*d[i+2];bins[Math.min(63,y>>2)]++;avg+=y;c++}avg/=c;const z=core.lumaHist(d,16);let bd=0;for(let i=0;i<64;i++)bd+=Math.abs(bins[i]-z.bins[i]);ok(bd<=c*0.001&&Math.abs(avg-z.avg)<0.05,`Luma scope histogram: bin delta ${bd}/${c}, avg ${avg.toFixed(3)} vs ${z.avg.toFixed(3)}`)}
 // compositor: Zig vs f64 JS reference of the same straight-alpha bilinear source-over
