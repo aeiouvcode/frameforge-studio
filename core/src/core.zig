@@ -298,16 +298,16 @@ fn at(x: [*]const f32, n: usize, i: i64) f32 {
     return x[@intCast(u)];
 }
 
-export fn ff_wsola_plan(mono_ptr: usize, n_in: usize, rate: f32, hs: u32, wl: u32, tol: u32, pos_ptr: usize, nframes: u32) void {
-    planImpl(mono_ptr, n_in, rate, hs, wl, tol, pos_ptr, nframes, null, 0);
+export fn ff_wsola_plan(mono_ptr: usize, n_in: usize, rate: f32, hs: u32, tol: u32, pos_ptr: usize, nframes: u32, wls_ptr: usize) void {
+    planImpl(mono_ptr, n_in, rate, hs, tol, pos_ptr, nframes, wls_ptr, null, 0);
 }
 
 // Transient-locked plan. flags: one byte per hs-sample input block, 1 where an onset starts (computed by the caller).
 // A frame whose predecessor already holds an onset continues naturally (pos = prev + hs) so the onset lands at one
 // output position in every overlapping frame; free frames may not re-read an onset the previous frame already played.
-export fn ff_wsola_plan_lock(mono_ptr: usize, n_in: usize, rate: f32, hs: u32, wl: u32, tol: u32, pos_ptr: usize, nframes: u32, flags_ptr: usize, nblocks: u32) void {
+export fn ff_wsola_plan_lock(mono_ptr: usize, n_in: usize, rate: f32, hs: u32, tol: u32, pos_ptr: usize, nframes: u32, flags_ptr: usize, nblocks: u32, wls_ptr: usize) void {
     const f: [*]const u8 = @ptrFromInt(flags_ptr);
-    planImpl(mono_ptr, n_in, rate, hs, wl, tol, pos_ptr, nframes, f, nblocks);
+    planImpl(mono_ptr, n_in, rate, hs, tol, pos_ptr, nframes, wls_ptr, f, nblocks);
 }
 
 fn onsetFirst(f: [*]const u8, nb: u32, hs: i64, lo: i64, hi: i64) i64 {
@@ -327,23 +327,25 @@ fn onsetLast(f: [*]const u8, nb: u32, hs: i64, lo: i64, hi: i64) i64 {
     return r;
 }
 
-fn planImpl(mono_ptr: usize, n_in: usize, rate: f32, hs: u32, wl: u32, tol: u32, pos_ptr: usize, nframes: u32, flags: ?[*]const u8, nb: u32) void {
+fn planImpl(mono_ptr: usize, n_in: usize, rate: f32, hs: u32, tol: u32, pos_ptr: usize, nframes: u32, wls_ptr: usize, flags: ?[*]const u8, nb: u32) void {
     const x: [*]const f32 = @ptrFromInt(mono_ptr);
     const pos: [*]i32 = @ptrFromInt(pos_ptr);
+    const wls: [*]const u32 = @ptrFromInt(wls_ptr);
     if (nframes == 0) return;
     pos[0] = 0;
     const h: i64 = hs;
     const t: i64 = tol;
-    const half: i64 = @divTrunc(@as(i64, wl), 2);
     const last: i64 = if (n_in > 0) @as(i64, @intCast(n_in)) - 1 else 0;
     var k: u32 = 1;
     while (k < nframes) : (k += 1) {
+        const wlk: i64 = @intCast(wls[k]);
+        const half: i64 = @divTrunc(wlk, 2);
         const nominal: i64 = @intFromFloat(@round(@as(f64, @floatFromInt(k)) * @as(f64, @floatFromInt(hs)) * @as(f64, rate)));
         const prev: i64 = pos[k - 1];
         const tmpl: i64 = prev + h;
         var lb: i64 = std.math.minInt(i64);
         if (flags) |f| {
-            if (onsetFirst(f, nb, h, tmpl, prev + @as(i64, wl)) >= 0) {
+            if (onsetFirst(f, nb, h, tmpl, prev + wlk) >= 0) {
                 pos[k] = @intCast(@min(tmpl, last));
                 continue;
             }
@@ -369,25 +371,29 @@ fn planImpl(mono_ptr: usize, n_in: usize, rate: f32, hs: u32, wl: u32, tol: u32,
     }
 }
 
-// Overlap-add one channel using a plan. win: wl Hann weights; output is normalised by the summed window. out/wsum: n_out f32 (zeroed here).
-export fn ff_wsola_ola(x_ptr: usize, n_in: usize, pos_ptr: usize, nframes: u32, win_ptr: usize, hs: u32, wl_in: u32, out_ptr: usize, wsum_ptr: usize, n_out: usize) void {
+// Overlap-add one channel using a plan. wins: concatenated Hann tables; wofs/wls: per-frame window offset and length.
+// Output is normalised by the summed window. out/wsum: n_out f32 (zeroed here).
+export fn ff_wsola_ola(x_ptr: usize, n_in: usize, pos_ptr: usize, nframes: u32, wins_ptr: usize, wofs_ptr: usize, wls_ptr: usize, hs: u32, out_ptr: usize, wsum_ptr: usize, n_out: usize) void {
     const x: [*]const f32 = @ptrFromInt(x_ptr);
     const pos: [*]const i32 = @ptrFromInt(pos_ptr);
-    const w: [*]const f32 = @ptrFromInt(win_ptr);
+    const w: [*]const f32 = @ptrFromInt(wins_ptr);
+    const wofs: [*]const u32 = @ptrFromInt(wofs_ptr);
+    const wls: [*]const u32 = @ptrFromInt(wls_ptr);
     const out: [*]f32 = @ptrFromInt(out_ptr);
     const ws: [*]f32 = @ptrFromInt(wsum_ptr);
     @memset(out[0..n_out], 0);
     @memset(ws[0..n_out], 0);
-    const wl: usize = wl_in;
     var k: u32 = 0;
     while (k < nframes) : (k += 1) {
         const o: usize = @as(usize, k) * hs;
         if (o >= n_out) break;
         const a: i64 = pos[k];
+        const wl: usize = wls[k];
+        const wo: usize = wofs[k];
         var i: usize = 0;
         while (i < wl and o + i < n_out) : (i += 1) {
-            out[o + i] += w[i] * at(x, n_in, a + @as(i64, @intCast(i)));
-            ws[o + i] += w[i];
+            out[o + i] += w[wo + i] * at(x, n_in, a + @as(i64, @intCast(i)));
+            ws[o + i] += w[wo + i];
         }
     }
     var j: usize = 0;
