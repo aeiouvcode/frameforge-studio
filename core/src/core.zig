@@ -299,6 +299,35 @@ fn at(x: [*]const f32, n: usize, i: i64) f32 {
 }
 
 export fn ff_wsola_plan(mono_ptr: usize, n_in: usize, rate: f32, hs: u32, wl: u32, tol: u32, pos_ptr: usize, nframes: u32) void {
+    planImpl(mono_ptr, n_in, rate, hs, wl, tol, pos_ptr, nframes, null, 0);
+}
+
+// Transient-locked plan. flags: one byte per hs-sample input block, 1 where an onset starts (computed by the caller).
+// A frame whose predecessor already holds an onset continues naturally (pos = prev + hs) so the onset lands at one
+// output position in every overlapping frame; free frames may not re-read an onset the previous frame already played.
+export fn ff_wsola_plan_lock(mono_ptr: usize, n_in: usize, rate: f32, hs: u32, wl: u32, tol: u32, pos_ptr: usize, nframes: u32, flags_ptr: usize, nblocks: u32) void {
+    const f: [*]const u8 = @ptrFromInt(flags_ptr);
+    planImpl(mono_ptr, n_in, rate, hs, wl, tol, pos_ptr, nframes, f, nblocks);
+}
+
+fn onsetFirst(f: [*]const u8, nb: u32, hs: i64, lo: i64, hi: i64) i64 {
+    var b: i64 = @divFloor(@max(lo, 0) + hs - 1, hs);
+    while (b * hs < hi and b < nb) : (b += 1) {
+        if (f[@intCast(b)] != 0) return b * hs;
+    }
+    return -1;
+}
+
+fn onsetLast(f: [*]const u8, nb: u32, hs: i64, lo: i64, hi: i64) i64 {
+    var r: i64 = -1;
+    var b: i64 = @divFloor(@max(lo, 0) + hs - 1, hs);
+    while (b * hs < hi and b < nb) : (b += 1) {
+        if (f[@intCast(b)] != 0) r = b * hs;
+    }
+    return r;
+}
+
+fn planImpl(mono_ptr: usize, n_in: usize, rate: f32, hs: u32, wl: u32, tol: u32, pos_ptr: usize, nframes: u32, flags: ?[*]const u8, nb: u32) void {
     const x: [*]const f32 = @ptrFromInt(mono_ptr);
     const pos: [*]i32 = @ptrFromInt(pos_ptr);
     if (nframes == 0) return;
@@ -310,13 +339,23 @@ export fn ff_wsola_plan(mono_ptr: usize, n_in: usize, rate: f32, hs: u32, wl: u3
     var k: u32 = 1;
     while (k < nframes) : (k += 1) {
         const nominal: i64 = @intFromFloat(@round(@as(f64, @floatFromInt(k)) * @as(f64, @floatFromInt(hs)) * @as(f64, rate)));
-        const tmpl: i64 = @as(i64, pos[k - 1]) + h;
+        const prev: i64 = pos[k - 1];
+        const tmpl: i64 = prev + h;
+        var lb: i64 = std.math.minInt(i64);
+        if (flags) |f| {
+            if (onsetFirst(f, nb, h, tmpl, prev + @as(i64, wl)) >= 0) {
+                pos[k] = @intCast(@min(tmpl, last));
+                continue;
+            }
+            const s = onsetLast(f, nb, h, prev, tmpl);
+            if (s >= 0) lb = s + 1;
+        }
         var best: i64 = std.math.clamp(nominal, 0, last);
         var best_c: f32 = -std.math.inf(f32);
         var d: i64 = -t;
         while (d <= t) : (d += 1) {
             const a = nominal + d;
-            if (a < 0 or a > last) continue;
+            if (a < 0 or a > last or a < lb) continue;
             var c: f32 = 0;
             var i: i64 = 0;
             while (i < half) : (i += 2) c += at(x, n_in, tmpl + i) * at(x, n_in, a + i);
@@ -325,6 +364,7 @@ export fn ff_wsola_plan(mono_ptr: usize, n_in: usize, rate: f32, hs: u32, wl: u3
                 best = a;
             }
         }
+        if (best_c == -std.math.inf(f32) and lb != std.math.minInt(i64)) best = @min(tmpl, last);
         pos[k] = @intCast(best);
     }
 }

@@ -41,7 +41,7 @@
         const mono=new Float32Array(n);for(const c of channels)for(let i=0;i<n;i++)mono[i]+=c[i];
         const win=new Float32Array(wl);for(let i=0;i<wl;i++)win[i]=0.5-0.5*Math.cos(2*Math.PI*i/wl);
         const xp=region('wsx',n*4),pp=region('wsp',nf*4),wp=region('wsw',wl*4),op=region('wso',nOut*4),sp=region('wss',nOut*4);
-        f32().set(mono,xp>>2);x.ff_wsola_plan(xp,n,rate,hs,wl,tol,pp,nf);f32().set(win,wp>>2);
+        const nb=Math.ceil(n/hs),fl=new Uint8Array(nb);if(opt.lock!==false){const E=new Float64Array(nb);for(let b=0;b<nb;b++){let e=0;for(let i=b*hs;i<Math.min(n,(b+1)*hs);i++)e+=mono[i]*mono[i];E[b]=e}for(let b=1;b<nb;b++){let m=0,c=0;for(let q=Math.max(0,b-4);q<b;q++){m+=E[q];c++}m/=c;if(E[b]>6*m&&E[b]>1e-4*hs&&!fl[b-1])fl[b]=1}}const lk=opt.lock!==false&&x.ff_wsola_plan_lock;const fp=lk?region('wsf',nb):0;if(lk)u8().set(fl,fp);f32().set(mono,xp>>2);if(lk)x.ff_wsola_plan_lock(xp,n,rate,hs,wl,tol,pp,nf,fp,nb);else x.ff_wsola_plan(xp,n,rate,hs,wl,tol,pp,nf);f32().set(win,wp>>2);
         const outs=[];for(const c of channels){f32().set(c,xp>>2);x.ff_wsola_ola(xp,n,pp,nf,wp,hs,wl,op,sp,nOut);outs.push(f32().slice(op>>2,(op>>2)+nOut))}
         return outs;
       },
