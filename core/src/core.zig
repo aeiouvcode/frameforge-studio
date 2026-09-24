@@ -284,3 +284,74 @@ export fn ff_log_mel(sig_ptr: usize, live: u32, win_ptr: usize, cos_ptr: usize, 
         }
     }
 }
+
+// ---- WSOLA time-stretch (pitch-preserving speed change) ----
+// Plan pass: pick each analysis frame position so that it lines up (max cross-correlation)
+// with the natural continuation of the previous frame. Run on a mono mix so every channel
+// shares one plan and the stereo image stays intact.
+// mono: n_in samples. rate: input samples consumed per output sample (speed).
+// hs: synthesis hop. wl: window length (correlation uses its first half). tol: search radius. pos: nframes i32.
+fn at(x: [*]const f32, n: usize, i: i64) f32 {
+    if (i < 0) return 0;
+    const u: u64 = @intCast(i);
+    if (u >= n) return 0;
+    return x[@intCast(u)];
+}
+
+export fn ff_wsola_plan(mono_ptr: usize, n_in: usize, rate: f32, hs: u32, wl: u32, tol: u32, pos_ptr: usize, nframes: u32) void {
+    const x: [*]const f32 = @ptrFromInt(mono_ptr);
+    const pos: [*]i32 = @ptrFromInt(pos_ptr);
+    if (nframes == 0) return;
+    pos[0] = 0;
+    const h: i64 = hs;
+    const t: i64 = tol;
+    const half: i64 = @divTrunc(@as(i64, wl), 2);
+    const last: i64 = if (n_in > 0) @as(i64, @intCast(n_in)) - 1 else 0;
+    var k: u32 = 1;
+    while (k < nframes) : (k += 1) {
+        const nominal: i64 = @intFromFloat(@round(@as(f64, @floatFromInt(k)) * @as(f64, @floatFromInt(hs)) * @as(f64, rate)));
+        const tmpl: i64 = @as(i64, pos[k - 1]) + h;
+        var best: i64 = std.math.clamp(nominal, 0, last);
+        var best_c: f32 = -std.math.inf(f32);
+        var d: i64 = -t;
+        while (d <= t) : (d += 1) {
+            const a = nominal + d;
+            if (a < 0 or a > last) continue;
+            var c: f32 = 0;
+            var i: i64 = 0;
+            while (i < half) : (i += 2) c += at(x, n_in, tmpl + i) * at(x, n_in, a + i);
+            if (c > best_c) {
+                best_c = c;
+                best = a;
+            }
+        }
+        pos[k] = @intCast(best);
+    }
+}
+
+// Overlap-add one channel using a plan. win: wl Hann weights; output is normalised by the summed window. out/wsum: n_out f32 (zeroed here).
+export fn ff_wsola_ola(x_ptr: usize, n_in: usize, pos_ptr: usize, nframes: u32, win_ptr: usize, hs: u32, wl_in: u32, out_ptr: usize, wsum_ptr: usize, n_out: usize) void {
+    const x: [*]const f32 = @ptrFromInt(x_ptr);
+    const pos: [*]const i32 = @ptrFromInt(pos_ptr);
+    const w: [*]const f32 = @ptrFromInt(win_ptr);
+    const out: [*]f32 = @ptrFromInt(out_ptr);
+    const ws: [*]f32 = @ptrFromInt(wsum_ptr);
+    @memset(out[0..n_out], 0);
+    @memset(ws[0..n_out], 0);
+    const wl: usize = wl_in;
+    var k: u32 = 0;
+    while (k < nframes) : (k += 1) {
+        const o: usize = @as(usize, k) * hs;
+        if (o >= n_out) break;
+        const a: i64 = pos[k];
+        var i: usize = 0;
+        while (i < wl and o + i < n_out) : (i += 1) {
+            out[o + i] += w[i] * at(x, n_in, a + @as(i64, @intCast(i)));
+            ws[o + i] += w[i];
+        }
+    }
+    var j: usize = 0;
+    while (j < n_out) : (j += 1) {
+        if (ws[j] > 1e-4) out[j] /= ws[j];
+    }
+}

@@ -35,6 +35,16 @@
         u8().set(data,pp);x.ff_lut_apply(pp,data.length,lp,lut.size,dp);data.set(u8().subarray(pp,pp+data.length));
         return data;
       },
+      // Pitch-preserving time-stretch. channels: Float32Array[] (same length). rate = speed.
+      wsola(channels,rate,opt={}){
+        const n=channels[0].length,hs=opt.hs||256,wl=opt.wl||1024,tol=opt.tol||256,nOut=Math.max(1,Math.floor(n/rate)),nf=Math.ceil(nOut/hs)+1;
+        const mono=new Float32Array(n);for(const c of channels)for(let i=0;i<n;i++)mono[i]+=c[i];
+        const win=new Float32Array(wl);for(let i=0;i<wl;i++)win[i]=0.5-0.5*Math.cos(2*Math.PI*i/wl);
+        const xp=region('wsx',n*4),pp=region('wsp',nf*4),wp=region('wsw',wl*4),op=region('wso',nOut*4),sp=region('wss',nOut*4);
+        f32().set(mono,xp>>2);x.ff_wsola_plan(xp,n,rate,hs,wl,tol,pp,nf);f32().set(win,wp>>2);
+        const outs=[];for(const c of channels){f32().set(c,xp>>2);x.ff_wsola_ola(xp,n,pp,nf,wp,hs,wl,op,sp,nOut);outs.push(f32().slice(op>>2,(op>>2)+nOut))}
+        return outs;
+      },
       peaks(samples,bins){
         const sp=region('samples',samples.byteLength),op=region('peaks',bins*4);
         f32().set(samples,sp>>2);x.ff_peaks(sp,samples.length,bins,op);
